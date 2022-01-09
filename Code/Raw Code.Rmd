@@ -1,0 +1,1095 @@
+---
+title: "Project 1 Redwood Data Report"
+author: "Camilla Yu 1089039 & Elena Wang 1078994"
+date: "9/18/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(GGally)
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(rjson)
+options(warn=0)
+library(ggpubr)
+library(magrittr)
+theme_set(theme_pubr())
+```
+
+
+## 2 Data Cleaning
+
+### General Check-up
+
+Data is collected into two datasets: sonoma-data-log.csv and sonoma-data-net.csv. Before analyzing the data, we need to take a general look at both of the datasets(variables, missing data, abnormality and consistency), and later we will combine them together to one dataset. 
+
+```{r}
+log <- read.csv("sonoma-data-log.csv", header = TRUE)
+net <- read.csv("sonoma-data-net.csv", header = TRUE)
+all <- read.csv("sonoma-data-all.csv", header = TRUE)
+loc <- read.table("mote-location-data.txt", header = TRUE)
+```
+
+To make the dates make sense, we need to load sonoma-dates and pair it with epoch.
+
+```{r}
+date <- fromJSON(file = "sonoma-dates.json")
+en = date$`epochNums `
+en = substr(en, 2, nchar(en)-1)
+en = scan(text = en, what = "")
+date$`epochNums ` = en
+
+ed = date$`
+
+epochDates `
+ed = substr(ed, 2, nchar(ed)-1)
+ed = scan(text = ed, what = "")
+```
+
+```{r}
+sonoma_date = data.frame(epoch = en,
+                         Dates = ed)
+
+sonoma_date$epoch = as.integer(sonoma_date$epoch)
+sonoma_date$Dates = gsub("  "," ", sonoma_date$Date)
+sonoma_date
+```
+
+```{r}
+log <- log %>% select(-c(result_time))
+net <- net %>% select(-c(result_time))
+log <- log %>% left_join(sonoma_date, by = c("epoch"))
+net <- net %>% left_join(sonoma_date, by = c("epoch"))
+```
+
+Log data has 301,056 observations and 11 variables, while net has 1114,980 observations and 11 variables. We need to check the range and distribution of each variable in two datasets one by one. 
+
+```{r}
+glimpse(log)
+```
+
+```{r}
+glimpse(net)
+```
+
+### a Removing outliers/abnormalities/missing values
+
+At first, we need to get rid of missing values of two dataset:
+
+```{r}
+summary(net)
+```
+
+Missing values took place from 5/14/2004 to 5/26/2004 for net data.
+
+```{r}
+missing <- net %>% filter(is.na(humidity)) %>% group_by(Dates) %>% summarise(n = n())
+head(missing)
+tail(missing)
+```
+
+```{r}
+summary(log)
+```
+
+Missing values took place from 04/30/2004 to 05/05/2004 for log data.
+
+```{r}
+missing2 <- log %>% filter(is.na(humidity)) %>% group_by(Dates) %>% 
+  summarise(n = n())
+head(missing2)
+tail(missing2)
+```
+
+```{r}
+log <- na.omit(log)
+net <- na.omit(net)
+```
+
+### Humidity
+
+The hitogram of humidity in both of the log and net dataset looks strange and it seems like there are some abnormal negative values for humidity which causes the histogram to be extremely left-skewed especially for the log dataset, so we need to take a closer look at it.
+
+```{r}
+par(mfrow = c(1, 2))
+ggplot(log, aes(x = humidity)) + geom_histogram()
+ggplot(net, aes(x = humidity)) + geom_histogram()
+```
+
+#### log - Humidity:
+
+To figure out the reason for negative humidity, we need to check which node id has negative humidity values. There are 3 node id (29, 198 and 65535) whose humidity value is negative, and there are 660 observations for node id 29, and 1 observation for each of node id 198 and 65535. 
+
+```{r}
+negative <- log %>% filter(humidity < 0)
+negative %>% group_by(nodeid) %>% summarise(n = n())
+```
+
+Then, we need to take look at these 3 specific note id to see if there is something wrong with the node. 
+
+```{r}
+node_29 <- log %>% filter(nodeid == 29)
+node_198 <- log %>% filter(nodeid == 198)
+node_65535 <- log %>% filter(nodeid == 65535)
+```
+
+For node_29:
+
+```{r}
+par(mfrow = c(2, 2))
+ggplot(node_29, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_29, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_29, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_29, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+We notice that humidity values and temperature values for node_29 are constants, which is wrong since we expect to see some changes as the change of epoch. So, we plan to drop the corresponding humidity and temperature variables for node_29 and set them as NAs.
+
+```{r}
+log[log["nodeid"] == 29,]["humidity"] <- NA
+log[log["nodeid"] == 29,]["humid_temp"] <- NA
+```
+
+For node_198:
+
+```{r}
+par(mfrow = c(2, 2))
+ggplot(node_198, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_198, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_198, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_198, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+There is only one extreme observation that has abnormal values for humidity, hamatop and hamabot, so we need to delete this abnormal observation.
+
+```{r}
+log %>% filter(nodeid == 198, humidity < 0)
+log <- subset(log, humidity != -5145.1)
+```
+
+For node 65535:
+
+There is only one point for node_65535 for all variables in the dataset, which is useless for the later analysis, so we could delete the node.
+
+```{r}
+par(mfrow = c(2, 2))
+ggplot(node_65535, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_65535, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_65535, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_65535, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+```{r}
+log <- subset(log, nodeid != 65535)
+```
+
+After deleting all abnormal values for humidity, the histogram for humidity should look better.
+
+```{r}
+ggplot(log, aes(x = humidity)) + geom_histogram()
+```
+
+#### net - Humidity:
+
+To figure out the reason for negative humidity, we need to check which node id has negative humidity values. There are 3 node id (78, 123 and 141) whose humidity value is negative, and there are 660 observations for node id 29, and 1 observation for each of node id 198 and 65535. 
+
+```{r}
+negative2 <- net %>% filter(humidity < 0)
+negative2 %>% group_by(nodeid) %>% summarise(n = n())
+```
+
+Then, we need to take look at these 3 specific note id to see if there is something wrong with the node. 
+
+```{r}
+node_78 <- net %>% filter(nodeid == 78)
+node_123 <- net %>% filter(nodeid == 123)
+node_141 <- net %>% filter(nodeid == 141)
+```
+
+For node_78:
+
+The histograms for node_78 look quite strange after some epoch, so we choose to drop the node_78.
+
+```{r}
+par(mfrow = c(2, 2))
+ggplot(node_78, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_78, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_78, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_78, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+```{r}
+net <- net[net["nodeid"] != 78, ]
+```
+
+For node_123:
+
+The histograms for node_123 look quite strange after epoch 5000, so we choose to drop the node_123.
+
+```{r}
+par(mfrow = c(2, 2))
+ggplot(node_123, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_123, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_123, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_123, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+```{r}
+net <- net[net["nodeid"] != 123, ]
+```
+
+For node_141:
+
+The histograms for node_141 look quite strange after epoch 9000, so we choose to drop the node_141.
+
+```{r}
+par(mfrow = c(2, 2))
+ggplot(node_141, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_141, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_141, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_141, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+```{r}
+net <- net[net["nodeid"] != 141, ]
+```
+
+After deleting all abnormal values for both log and net dataset, the histogram for humidity should look quite normal for both of them.
+
+```{r}
+net %>% filter(humidity < 0)
+```
+
+And the range for humidity in two dataset maches with each other.
+
+```{r}
+par(mfrow = c(1, 2))
+ggplot(log, aes(x = humidity)) + geom_histogram()
+ggplot(net, aes(x = humidity)) + geom_histogram()
+```
+
+But there are still some really high values for humidity of net dataset. Node_145 has low voltage from the later analysis of voltage in the log dataset, so we should drop node_145 for net too. 
+
+```{r}
+high2 <- net %>% filter(humidity > 110)
+high2 %>% group_by(nodeid) %>% summarise(n = n())
+```
+
+```{r}
+net <- net[net["nodeid"] != 145, ]
+```
+
+For node_118, nothing looks wierd, so we should keep it.
+
+```{r}
+node_118 <- net %>% filter(nodeid == 118)
+par(mfrow = c(2, 2))
+ggplot(node_118, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_118, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_118, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_118, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+### Humid_temp
+
+The histogram for temperature in log data looks quite normal, which is also a good sign for previous data cleaning. But there are some extreme high values for temperature in net data.
+
+```{r}
+par(mfrow = c(1, 2))
+ggplot(log, aes(x = humid_temp)) + geom_histogram()
+ggplot(net, aes(x = humid_temp)) + geom_histogram()
+```
+
+#### net-humid_tem
+
+Let's look at which nodes whose temperature is over 50.
+
+```{r}
+tem <- net %>% filter(humid_temp > 50)
+tem %>% group_by(nodeid) %>% summarise(n = n())
+```
+
+Something wierd happens after 3600 epoch, so we should delete it.
+
+```{r}
+node_3 <- net %>% filter(nodeid == 3)
+par(mfrow = c(2, 2))
+ggplot(node_3, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_3, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_3, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_3, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+```{r}
+net <- net[net["nodeid"] != 3, ]
+```
+
+Histograms for temperature now look better. And the range for temperature variable in two dataset matches with each other.
+
+```{r}
+par(mfrow = c(1, 2))
+ggplot(log, aes(x = humid_temp)) + geom_histogram()
+ggplot(net, aes(x = humid_temp)) + geom_histogram()
+```
+
+### Hamatop
+
+The histogram for incident PAR of log dataset looks quite similar to it of net dataset, and the histogram has no negative values and looks quite normal, but there are some extreme high values for incident PAR in the log dataset.
+
+```{r}
+par(mfrow = c(1, 2))
+ggplot(log, aes(x = hamatop)) + geom_histogram()
+ggplot(net, aes(x = hamatop)) + geom_histogram()
+```
+
+#### log-hamatop
+
+Only node_40 has extreme high values for incident PAR.
+
+```{r}
+high <- log %>% filter(hamatop > 150000)
+high %>% group_by(nodeid) %>% summarise(n = n())
+```
+
+For node_40:
+
+```{r}
+node_40 <- log %>% filter(nodeid == 40)
+```
+
+There are extreme low values(close to 0) for reflected PAR, and extreme high values for direct PAR as around epoch 50, and there is a sharp jump for PAR, which is really abnormal. So, we should delete hamatop and hamabot for node_40.
+
+```{r}
+par(mfrow = c(2, 2))
+ggplot(node_40, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_40, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_40, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_40, aes(x = epoch, y = hamabot)) + geom_point()
+```
+
+```{r}
+log[log["nodeid"] == 40, ]["hamatop"] <- NA
+log[log["nodeid"] == 40, ]["hamabot"] <- NA
+```
+
+Now the histogram for direct PAR of log dataset looks quite normal and similar to the histogram for direct PAR of net dataset.
+
+```{r}
+ggplot(log, aes(x = hamatop)) + geom_histogram()
+```
+
+However, the range for hamatop is not as the same as the paper, so we need to transfer Lux to PPFD.
+
+```{r}
+log <- log %>% mutate(hamatop_ppfd = hamatop / 54)
+log <- log %>% select(-c(hamatop))
+log <- log %>% mutate(hamatop = hamatop_ppfd)
+log <- log %>% select(-c(hamatop_ppfd))
+```
+
+```{r}
+net <- net %>% mutate(hamatop_ppfd = hamatop / 54)
+net <- net %>% select(-c(hamatop))
+net <- net %>% mutate(hamatop = hamatop_ppfd)
+net <- net %>% select(-c(hamatop_ppfd))
+```
+
+### Hamabot
+
+Two histograms for reflected PAR look quite similar and normal.
+
+```{r}
+par(mfrow = c(1, 2))
+ggplot(log, aes(x = hamabot)) + geom_histogram()
+ggplot(net, aes(x = hamabot)) + geom_histogram()
+```
+
+And we need also to transfer hamabot from Lux to PPFD.
+
+```{r}
+log <- log %>% mutate(hamabot_ppfd = hamabot / 54)
+log <- log %>% select(-c(hamabot))
+log <- log %>% mutate(hamabot = hamabot_ppfd)
+log <- log %>% select(-c(hamabot_ppfd))
+```
+
+```{r}
+net <- net %>% mutate(hamabot_ppfd = hamabot / 54)
+net <- net %>% select(-c(hamabot))
+net <- net %>% mutate(hamabot = hamabot_ppfd)
+net <- net %>% select(-c(hamabot_ppfd))
+```
+
+### Voltage
+
+The histogram for voltage of log dataset has some extreme low values that are close to 0. And the histogram for voltage of net dataset has some extreme high values that are close to 1000.
+
+```{r}
+par(mfrow = c(1, 2))
+ggplot(log, aes(x = voltage)) + geom_histogram()
+ggplot(net, aes(x = voltage)) + geom_histogram()
+```
+
+There are many nodes whose voltage values are close to 0, so we choose to replace them using NAs.
+
+```{r}
+low <- log %>% filter(voltage < 1)
+low %>% group_by(nodeid) %>% summarise(n = n(), mean = mean(voltage))
+```
+
+```{r}
+log[log["nodeid"] == 128, ]["voltage"] <- NA
+log[log["nodeid"] == 134, ]["voltage"] <- NA
+log[log["nodeid"] == 135, ]["voltage"] <- NA
+log[log["nodeid"] == 141, ]["voltage"] <- NA
+log[log["nodeid"] == 142, ]["voltage"] <- NA
+log[log["nodeid"] == 143, ]["voltage"] <- NA
+log[log["nodeid"] == 145, ]["voltage"] <- NA
+```
+
+Now, the histogram for voltage of log dataset should look quite normal:
+
+```{r}
+ggplot(log, aes(x = voltage)) + geom_histogram()
+```
+
+```{r}
+vol <- net %>% filter(voltage > 1000)
+vol %>% group_by(nodeid) %>% summarise(n = n())
+```
+
+Take a closer look at these two nodes. For node 134, every histograms look normal, but the voltage for it is a constant, which might read incorrectly, so we choose to drop it.
+
+```{r}
+node_134 <- net %>% filter(nodeid == 134)
+node_135 <- net %>% filter(nodeid == 135)
+par(mfrow = c(3, 2))
+ggplot(node_134, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_134, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_134, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_134, aes(x = epoch, y = hamabot)) + geom_point()
+ggplot(node_134, aes(x = epoch, y = voltage)) + geom_point()
+```
+
+```{r}
+par(mfrow = c(3, 2))
+ggplot(node_135, aes(x = epoch, y = humidity)) + geom_point()
+ggplot(node_135, aes(x = epoch, y = humid_temp)) + geom_point()
+ggplot(node_135, aes(x = epoch, y = hamatop)) + geom_point()
+ggplot(node_135, aes(x = epoch, y = hamabot)) + geom_point()
+ggplot(node_135, aes(x = epoch, y = voltage)) + geom_point()
+```
+
+```{r}
+net[net["nodeid"] == 134, ]["voltage"] <- NA
+net[net["nodeid"] == 135, ]["voltage"] <- NA
+```
+
+### b Combine data
+
+After finishing the outlier check and range conversion, we could inner join two dataset now:
+
+```{r}
+log_net <- inner_join(log, net, by = c("nodeid", "epoch"))
+```
+
+And we need to check if two values from two dataset match with each other (we expect to see the difference between two values is close to 0).
+
+- Humidity:
+
+```{r}
+log_net <- log_net %>% mutate(diff.humi = humidity.x - humidity.y)
+log_net %>% filter(diff.humi != 0) %>% select(nodeid, epoch, diff.humi)
+```
+
+They are close to each other, so we choose to average these two values as our new value.
+
+```{r}
+log_net <- log_net %>% mutate(humidity = (humidity.x + humidity.y) / 2)
+log_net <- log_net %>% select(-c(humidity.x, humidity.y, diff.humi))
+```
+
+- Temperature
+
+```{r}
+log_net <- log_net %>% mutate(diff.tem = humid_temp.x - humid_temp.y)
+log_net %>% filter(diff.tem != 0) %>% select(nodeid, epoch, diff.tem)
+```
+
+They are close to each other, so we choose to average these two values as our new value.
+
+```{r}
+log_net <- log_net %>% mutate(humid_temp = (humid_temp.x + humid_temp.y) / 2)
+log_net <- log_net %>% select(-c(humid_temp.x, humid_temp.y, diff.tem))
+```
+
+- Hamatop
+
+```{r}
+log_net <- log_net %>% mutate(hamatop = (hamatop.x + hamatop.y) / 2)
+log_net <- log_net %>% select(-c(hamatop.x, hamatop.y))
+```
+
+- Hamabot
+
+```{r}
+log_net <- log_net %>% mutate(hamabot = (hamabot.x + hamabot.y) / 2)
+log_net <- log_net %>% select(-c(hamabot.x, hamabot.y))
+```
+
+- Voltage
+
+To make the voltage variable in two dataset have the same range, we need to run linear regression for voltage in two dataset:
+
+```{r}
+lm.vol <- lm(voltage.x ~ voltage.y, log_net)
+summary(lm.vol)
+```
+ 
+```{r}
+net <- net %>% mutate(voltage = voltage * (-0.01215) + 5.374)
+```
+ 
+We choose the voltage value from log data as the true value.
+
+```{r}
+log_net <- log_net %>% mutate(voltage = voltage.x)
+log_net <- log_net %>% select(-c(voltage.x, voltage.y))
+```
+
+Then we need to drop/rename the other variables in the data:
+
+```{r}
+log_net <- log_net %>% mutate(Dates = Dates.x)
+log_net <- log_net %>% mutate(parent = parent.x)
+log_net <- log_net %>% mutate(depth = depth.x)
+log_net <- log_net %>% mutate(humid_adj = humid_adj.x)
+log_net <- log_net %>% select(-c(Dates.x, Dates.y, parent.x, parent.y, depth.x, depth.y, humid_adj.x, humid_adj.y))
+```
+
+```{r}
+colnames(log_net)
+```
+
+```{r}
+log_net_cleaned <- log_net 
+log_cleaned <- log 
+net_cleaned <- net 
+```
+
+However, if we just use inner join function to merge log and net dataset, there will be left complement in both log and net dataset. So, we need to manually select those left values in both net and log dataset.
+
+```{r}
+complement <- log_cleaned %>% left_join(log_net_cleaned, by = c("nodeid", "epoch"))
+```
+
+```{r}
+log_complement <- complement %>% filter(is.na(hamabot.y))
+log_complement <- log_complement %>% rename(c("Dates" = "Dates.x", "parent" = "parent.x", "voltage" = "voltage.x", "depth" = "depth.x", "humidity" = "humidity.x",  "humid_temp" = "humid_temp.x", "humid_adj" = "humid_adj.x", "hamatop" = "hamatop.x", "hamabot" = "hamabot.x"))
+```
+
+```{r}
+log_complement <- log_complement %>% select(-c(humidity.y, humid_temp.y, hamatop.y, hamabot.y, voltage.y, parent.y, depth.y, humid_adj.y, Dates.y))
+```
+
+```{r}
+complement2 <- left_join(net_cleaned, log_net_cleaned, by = c("nodeid", "epoch"))
+net_complement <- complement2 %>% filter(is.na(hamabot.y))
+net_complement <- net_complement %>% rename(c("Dates" = "Dates.x", "parent" = "parent.x", "voltage" = "voltage.x", "depth" = "depth.x", "humidity" = "humidity.x",  "humid_temp" = "humid_temp.x", "humid_adj" = "humid_adj.x", "hamatop" = "hamatop.x", "hamabot" = "hamabot.x"))
+```
+
+```{r}
+net_complement <- net_complement %>% select(-c(humidity.y, humid_temp.y, hamatop.y, hamabot.y, voltage.y, parent.y, depth.y, humid_adj.y, Dates.y))
+```
+
+```{r}
+total_complement <- rbind(log_complement, net_complement)
+log_net_cleaned <- rbind(total_complement, log_net_cleaned)
+log_net_cleaned <- na.omit(log_net_cleaned)
+log_cleaned <- na.omit(log_cleaned)
+net_cleaned <- na.omit(net_cleaned)
+```
+
+Now we need to save all files (log_cleaned, net_cleaed, log_net_cleand):
+
+```{r}
+write.csv(log_cleaned, "log_cleaned.csv")
+write.csv(net_cleaned, "net_cleaned.csv")
+write.csv(log_net_cleaned, "log_net_cleaned.csv")
+```
+
+Finally we could combine the dataset with loc:
+
+```{r}
+log_net_loc <- merge(log_net_cleaned, loc, by.x = "nodeid", by.y = "ID")
+log_net_loc <- na.omit(log_net_loc)
+write.csv(log_net_loc, "log_net_loc.csv")
+```
+
+## 3 Data Exploration
+
+### a.
+
+```{r}
+# Import log_net_loc dataset and rearrange the columns according to Dates
+log_net_loc = read.csv("log_net_loc.csv",header = TRUE)
+log_net_loc_Date = separate(log_net_loc, Dates, sep = " ", into = c("Weekday", "Month", "Day", "Time", "Year"))
+log_net_loc_Date <- log_net_loc_Date %>% select(-X)
+log_net_loc_Date
+```
+
+```{r}
+log_net_loc_Date %>% group_by(Month) %>% summarise(n = n())
+```
+
+```{r}
+# Reorder date by month-day-time
+month_convert =  function(x){
+  if (x == "Apr"){
+    return(4)}
+  else if (x =="May"){
+    return(5)
+  }
+  else if (x == "Jun"){
+    return(6)
+  }
+}
+```
+
+```{r}
+log_net_loc_Date$Month = as.character(log_net_loc_Date$Month)
+log_net_loc_Date$Month = sapply(log_net_loc_Date$Month, month_convert)
+log_net_loc_Date$Dates = paste(log_net_loc_Date$Year, 
+                         log_net_loc_Date$Month, 
+                         log_net_loc_Date$Day)
+log_net_loc_Date$Dates = as.character(log_net_loc_Date$Dates)
+log_net_loc_Date$Dates = as.Date(log_net_loc_Date$Dates, format = "%Y %m %d")
+log_net_loc_Date = log_net_loc_Date[order(log_net_loc_Date$Dates),]
+head(log_net_loc_Date)
+tail(log_net_loc_Date)
+```
+
+```{r}
+# Extract hour from time
+time = log_net_loc_Date$Time
+time = substr(time, start = 1, stop = 2)
+time = as.numeric(time)
+log_net_loc_Date = log_net_loc_Date %>%
+  mutate(hour = time)
+
+# Change Dates to the type of date for future evaluation 
+log_net_loc_Date$Dates = as.Date(log_net_loc_Date$Dates)
+head(log_net_loc_Date)
+tail(log_net_loc_Date)
+```
+
+```{r}
+# To see the pairwise scatterplots of mean value of humidity, humid_temp, humid_adj, hamatop and hamabot in the same hour time from 8am to 8pm 
+FiveMainVariables = log_net_loc_Date %>%
+  select(hour, humidity, humid_temp, humid_adj,hamatop, hamabot) %>%
+  filter(hour >= 8 & hour <= 20) %>%
+  group_by(hour)%>%
+  summarise("humidity" = mean(humidity),
+            "humid_temp" = mean(humid_temp),
+            "humid_adj" = mean(humid_adj),
+            "hamatop" = mean(hamatop),
+            "hamabot" = mean(hamabot))
+FiveMainVariables 
+```
+
+From the the pairwise scatterplots below, we could see that all of these five variables have really high correlation between each other. Humid_adj and humidity have the highest correlation, which is almost 1. 
+
+```{r}
+FiveMainVariables = na.omit(FiveMainVariables)
+ggpairs(FiveMainVariables[,-1]) # variables of hour should be hided 
+```
+
+### b.
+
+Are any of the predictors associated with Incident PAR? (hamatop) If so, explain the relationship. 
+The meaningful variables grouped by hour I choose are voltage, humidity, humid_temp, humid_adj, hamabot, height, Dist 
+
+From the pairwise scatterplots below, we can see that incident PAR have high relationship with voltage, humidity, humid_temp, humid_adj, hamabot and height. Only Dist variable doesn't have high relationship with incident PAR. 
+
+```{r}
+colnames(log_net_loc_Date)
+Cor_IncidentPAR = log_net_loc_Date %>%
+  select(hour, hamatop, voltage, humidity, humid_temp, humid_adj, hamabot, Height, Dist) %>%
+  filter(hour >= 8 & hour <= 20) %>%
+  group_by(hour)%>%
+  summarise("hamatop" = mean(hamatop),
+            "voltage" = mean(voltage),
+            "humidity" = mean(humidity),
+            "humid_temp" = mean(humid_temp),
+            "humid_adj" = mean(humid_adj),
+            "hamabot" = mean(hamabot),
+            "Height" = mean(Height),
+            "Dist" = mean(Dist))
+Cor_IncidentPAR = na.omit(Cor_IncidentPAR)
+ggpairs(Cor_IncidentPAR[,-1]) # variables of hour should be hided 
+```
+
+### c.
+
+temperature vs time (8am - 8pm) with height color 
+
+From the plot below, we can see that the temperature have obvious trend that it's lower in the morning and afternoon but higher in the noon, which is normal. According to the height color, we will conclude that height and temperature have positive relationship in general, which means that lower height have lower temperature. 
+
+```{r}
+log_net_loc_Date %>%
+  group_by(Height)%>%
+  summarise(n = n())
+
+Time_Temp = log_net_loc_Date %>%
+  select(Dates,hour,humid_temp,Height) %>%
+  filter(hour >= 8 & hour <= 20) 
+head(Time_Temp) 
+
+ggplot(Time_Temp, aes(x = hour, y = humid_temp, color = Height)) +
+  geom_point()
+
+```
+
+humidity vs time (days during the entire experiment)
+
+Grouped by height to see the trend of mean value of humidity by day during the whole experiment. 
+
+```{r}
+# In order to better perform the relationships between three dimensions, height will be separated to different levels.
+
+Height_level = function (height){
+  if (height <= 30){
+    return("low level")}
+  else if (height > 30 & height < 50){
+    return("middle level")
+  }
+  else if (height >= 50){
+    return("high level")
+  } 
+}
+```
+
+From the plot lines below, we can see that the humidity of three levels height has the same tendency. Before May 15th, lower height has higher humidity and higher height has lower humidity, however, in the middle of May, higher height has higher humidity. During the last half month of this experiment, they perform similar. 
+
+```{r}
+Time_Humidity = log_net_loc_Date %>%
+  select(Dates,humidity,Height) 
+Time_Humidity$Height = sapply(Time_Humidity$Height,Height_level)
+
+Time_Humidity_group = Time_Humidity %>%
+  group_by(Dates,Height) %>%
+  summarise("humidity" = mean(humidity))
+Time_Humidity_group
+
+ggplot(Time_Humidity_group, aes(x = Dates, y = humidity, color = Height)) +
+  geom_line()
+ggplot(Time_Humidity_group, aes(x = Dates, y = humidity, color = Height)) +
+  geom_point()
+```
+
+humidity_adj. vs time (days during the entire experiment)
+
+humidity_adj perform similar with humidity 
+
+```{r}
+Time_humid_adj = log_net_loc_Date %>%
+  select(Dates,humid_adj,Height) 
+Time_humid_adj$Height = sapply(Time_humid_adj$Height,Height_level)
+
+Time_humid_adj_group = Time_humid_adj %>%
+  group_by(Dates,Height) %>%
+  summarise("humid_adj" = mean(humid_adj))
+Time_humid_adj_group
+
+ggplot(Time_humid_adj_group, aes(x = Dates, y = humid_adj, color = Height)) +
+  geom_line()
+```
+
+Incident PAR (hamatop) vs time (days during the entire experiment)
+
+From the line plots below, the tendencies of Incident PAR in three height levels have the similar trend. Additionally, higher height has higher Incident PAR, and lower height has lower Incident PAR.
+
+```{r}
+Time_hamatop = log_net_loc_Date %>%
+  select(Dates,hamatop,Height) 
+Time_hamatop$Height = sapply(Time_hamatop$Height,Height_level)
+
+Time_hamatop_group = Time_hamatop %>%
+  group_by(Dates,Height) %>%
+  summarise("hamatop" = mean(hamatop))
+Time_hamatop_group
+
+ggplot(Time_hamatop_group, aes(x = Dates, y = hamatop, color = Height)) +
+  geom_line()
+ggplot(Time_hamatop_group, aes(x = Dates, y = hamatop, color = Height)) +
+  geom_point()
+```
+
+Reflected PAR (hamabot) vs time (days during the entire experiment)
+
+From the lie plots below, hamabot in high level is obviously higher than in middle and lower level. Nodes in middle and low level have very close reflected PAR, although middle PAR is bit higher than low PAR.  
+
+```{r}
+Time_hamabot = log_net_loc_Date %>%
+  select(Dates,hamabot,Height) 
+Time_hamabot$Height = sapply(Time_hamabot$Height,Height_level)
+
+Time_hamabot_group = Time_hamabot %>%
+  group_by(Dates,Height) %>%
+  summarise("hamabot" = mean(hamabot))
+Time_hamabot_group
+
+ggplot(Time_hamabot_group, aes(x = Dates, y = hamabot, color = Height)) +
+  geom_line()
+ggplot(Time_hamabot_group, aes(x = Dates, y = hamabot, color = Height)) +
+  geom_point()
+```
+
+### d.
+
+From the PCA analysis and scree plot, this data could be approximated by the lower-dimension representation since from the first three PCs, the fraction of total variance really close to 90%, which means that the first three PCs could have enough information to explain the dataset. 
+
+```{r}
+Value_PCA = data.frame(log_net_loc_Date$humidity, 
+                       log_net_loc_Date$humid_temp,
+                       log_net_loc_Date$hamatop,
+                       log_net_loc_Date$hamabot,
+                       log_net_loc_Date$Height)
+head(Value_PCA)
+
+```
+
+```{r}
+# Perform principal component analysis 
+pc = prcomp(Value_PCA, scale = TRUE)
+pc
+summary(pc)
+# Obtain the eigenvalues
+eigenvalue = pc$sdev^2
+eigenvalue
+```
+
+```{r}
+# scree_plot
+eigs_cum <- cumsum(eigenvalue) /sum(eigenvalue)
+# may be useful for plotting
+ggplot() + geom_point(aes(x = 1:length(eigenvalue), y=eigs_cum)) +
+labs(x = "first PCs", y = "fraction of total variance explained")
+```
+
+
+## 4 Interesting Findings
+
+### Finding 1
+
+Sensors with high level of height have the highest values for both incident PAR and reflected PAR. Sensors with middle level of height have higher values for incident PAR than sensors with low level of height. But sensors with middle level of height have similar values for reflected PAR than sensors with lower level of height. What's more, for incident PAR, sensors with different levels of heights have similar patterns, but for reflected PAR, sensors with different levels of heights have different patterns, which means heights influence the temporal trend for reflected PAR but not for incident PAR.
+
+```{r, echo = FALSE, fig.height=3, fig.width=7}
+# Import log_net_loc dataset and rearrange the columns according to Dates
+log_net_loc = read.csv("log_net_loc.csv",header = TRUE)
+log_net_loc_Date = separate(log_net_loc, Dates, sep = " ", into = c("Weekday", "Month", "Day", "Time", "Year"))
+log_net_loc_Date <- log_net_loc_Date %>% select(-X)
+
+# Reorder date by month-day-time
+month_convert =  function(x){
+  if (x == "Apr"){
+    return(4)}
+  else if (x =="May"){
+    return(5)
+  }
+  else if (x == "Jun"){
+    return(6)
+  }
+}
+
+log_net_loc_Date$Month = as.character(log_net_loc_Date$Month)
+log_net_loc_Date$Month = sapply(log_net_loc_Date$Month, month_convert)
+log_net_loc_Date$Dates = paste(log_net_loc_Date$Year, 
+                         log_net_loc_Date$Month, 
+                         log_net_loc_Date$Day)
+log_net_loc_Date$Dates = as.character(log_net_loc_Date$Dates)
+log_net_loc_Date$Dates = as.Date(log_net_loc_Date$Dates, format = "%Y %m %d")
+log_net_loc_Date = log_net_loc_Date[order(log_net_loc_Date$Dates),]
+
+# Extract hour from time
+time = log_net_loc_Date$Time
+time = substr(time, start = 1, stop = 2)
+time = as.numeric(time)
+log_net_loc_Date = log_net_loc_Date %>%
+  mutate(hour = time)
+
+# Change Dates to the type of date for future evaluation 
+log_net_loc_Date$Dates = as.Date(log_net_loc_Date$Dates)
+
+# In order to better perform the relationships between three dimensions, height will be separated to different levels.
+
+Height_level = function (height){
+  if (height <= 30){
+    return("low level")}
+  else if (height > 30 & height < 50){
+    return("middle level")
+  }
+  else if (height >= 50){
+    return("high level")
+  } 
+}
+
+Time_hamatop = log_net_loc_Date %>%
+  select(Dates,hamatop,Height) 
+Time_hamatop$Height = sapply(Time_hamatop$Height,Height_level)
+
+Time_hamatop_group = Time_hamatop %>%
+  group_by(Dates,Height) %>%
+  summarise("hamatop" = mean(hamatop))
+
+top <- ggplot(Time_hamatop_group, aes(x = Dates, y = hamatop, color = Height)) +
+  geom_line() + labs(title = "Temporal Trend for Incident PAR", y = "Incident PAR") + theme(plot.title = element_text(hjust = 0.5))
+
+Time_hamabot = log_net_loc_Date %>%
+  select(Dates,hamabot,Height) 
+Time_hamabot$Height = sapply(Time_hamabot$Height,Height_level)
+
+Time_hamabot_group = Time_hamabot %>%
+  group_by(Dates,Height) %>%
+  summarise("hamabot" = mean(hamabot))
+
+bot <- ggplot(Time_hamabot_group, aes(x = Dates, y = hamabot, color = Height)) +
+  geom_line() + labs(title = "Temporal Trend for Reflected PAR", y = "Reflected PAR") + theme(plot.title = element_text(hjust = 0.5))
+
+figure <- ggarrange(top, bot,
+                    ncol = 2, nrow = 1)
+figure
+```
+
+### Finding 2
+
+At first, we want to see how many observations each node has and then randomly pick 9 nodes from different height ranges (3 from height < 40, 3 from  40 < height < 60 and 3 from height > 60). And these nodes should have more than 6000 observations to make sure we have enough data to plot for.
+
+```{r}
+log_net_loc %>% 
+  group_by(nodeid, Height) %>% 
+  summarise(n = n()) %>%
+  arrange(Height) %>%
+  filter(n > 6000)
+```
+
+We picked node_14, node_46 and node_110 whose height is less than 50m. And node_70, node_74 and node_119 for nodes whose height is between 40m and 60m. Node_127, node_105 and node_113 are nodes whose height is greater than 60m.
+
+```{r}
+node_14 <- log_net_loc %>% filter(nodeid == 14) %>% select(Height, humidity, humid_temp, nodeid)
+node_46 <- log_net_loc %>% filter(nodeid == 46) %>% select(Height, humidity, humid_temp, nodeid)
+node_110 <- log_net_loc %>% filter(nodeid == 110) %>% select(Height, humidity, humid_temp, nodeid)
+node_70 <- log_net_loc %>% filter(nodeid == 70) %>% select(Height, humidity, humid_temp, nodeid)
+node_74 <- log_net_loc %>% filter(nodeid == 74) %>% select(Height, humidity, humid_temp, nodeid)
+node_119 <- log_net_loc %>% filter(nodeid == 119) %>% select(Height, humidity, humid_temp, nodeid)
+node_127 <- log_net_loc %>% filter(nodeid == 127) %>% select(Height, humidity, humid_temp, nodeid)
+node_105 <- log_net_loc %>% filter(nodeid == 105) %>% select(Height, humidity, humid_temp, nodeid)
+node_113 <- log_net_loc %>% filter(nodeid == 113) %>% select(Height, humidity, humid_temp, nodeid)
+```
+
+Then combine those nodes into one dataset.
+
+```{r}
+nodes <- node_14 %>% 
+  rbind(node_46) %>% 
+  rbind(node_110) %>% 
+  rbind(node_70) %>% 
+  rbind(node_74) %>% 
+  rbind(node_119) %>% 
+  rbind(node_127) %>% 
+  rbind(node_105) %>% 
+  rbind(node_113)
+nodes
+```
+
+Now we could plot the scatterplot for humidity vs. temperature in terms of height and facet using nodeid. 
+
+```{r}
+ggplot(nodes, aes(x = humid_temp, y = humidity, color = Height)) +
+  geom_point() +
+  facet_wrap(~ nodeid) +
+  geom_smooth(se = FALSE) +
+  labs(title = "Humidity vs. Temperature for 9 Nodes in terms of Height",
+       x = "Temperature",
+       y = "Humidity")
+```
+
+It's interesting to see that there is a negative relationship between humidity and temperature, which means environment with high temperature has low humidity values. And for different heights, the relationship between temperature and humidity doesn't change a lot, so we think that the change of heights doesn't affect the relationship between humidity and temperature. 
+
+### Finding 3
+
+From PCA analysis above, the number of epoch would be well predicted from the first three PCs to see which epochs stand out. We would randomly select the first 100 epochs to see which one would stand out compared to in the 1st & 3rd PCs and 2nd & 3rd PCs. In this case, the epoch is the ID identifier and since we have same number of epoch, they should label as .1,.2 etc. 
+
+```{r}
+Value_PCA100 = data.frame(log_net_loc_Date$epoch,
+                       log_net_loc_Date$humidity, 
+                       log_net_loc_Date$humid_temp,
+                       log_net_loc_Date$hamatop,
+                       log_net_loc_Date$hamabot,
+                       log_net_loc_Date$Height
+                       )
+Value_PCA100 <- Value_PCA100 %>% remove_rownames
+rownames(Value_PCA100) = make.names(Value_PCA100[,1],unique = TRUE)
+Value_PCA100%>% 
+  group_by(log_net_loc_Date.epoch) %>% 
+  summarise(n = n()) 
+PCA100 = Value_PCA100[1:100,2:6]
+head(PCA100)
+tail(PCA100)
+```
+
+
+```{r}
+pc100 = prcomp(PCA100,scale = TRUE)
+pc100_matrix = pc100$rotation
+pc100_matrix[,1:3]
+PrincipalComponents = pc100$x
+head(PrincipalComponents[,1:3])
+eigenvalue100 = pc100$sdev^2
+eigenvalue100
+sum(eigenvalue100)
+```
+
+```{r}
+# plot 1st and 3rd PCs
+ggplot() + geom_point(aes(x = PrincipalComponents[, 1], y=PrincipalComponents[, 3]),size = 1) +
+geom_text(aes(x = PrincipalComponents[, 1], y=PrincipalComponents[, 3], label=rownames(PrincipalComponents)),check_overlap = T) +
+labs(x = "PC1", y = "PC3")
+```
+
+```{r}
+# plot 2nd and 3rd PCs
+ggplot() + geom_point(aes(x = PrincipalComponents[, 2], y=PrincipalComponents[, 3]),size = 1) +
+geom_text(aes(x = PrincipalComponents[, 2], y=PrincipalComponents[, 3], label=rownames(PrincipalComponents)),check_overlap = T) +
+labs(x = "PC2", y = "PC3")
+```
+
+## 5 Graph Critique in the paper
+
+### a. Histogram for log transform of hamatop and hamabot:
+
+```{r}
+hama1 <- ggplot(log_net_cleaned, aes(x = log(hamatop))) + geom_histogram(binwidth = 0.3) + labs(titile = "Histogram for log(hamatop)")
+hama2 <- ggplot(log_net_cleaned, aes(x = log(hamabot))) + geom_histogram(binwidth = 0.3) + labs(titile = "Histogram for log(hamabot)")
+figure <- ggarrange(hama1, hama2,
+                    ncol = 2, nrow = 1)
+figure
+```
+
+### b. Spatial and Temporal Plots for Sensor Readings:
+
+```{r}
+gg1 <- ggplot(log_net_loc, aes(x = epoch, y = humidity, color = Height)) + geom_point(alpha = 0.25) + labs(title = "Spatial and Temporal Plot for Humidity")
+gg2 <- ggplot(log_net_loc, aes(x = epoch, y = humid_temp, color = Height)) + geom_point(alpha = 0.25)+ labs(title = "Spatial and Temporal Plot for Temperature", y = "Temperature")
+gg3 <- ggplot(log_net_loc, aes(x = epoch, y = hamatop, color = Height)) + geom_point(alpha = 0.25)+ labs(title = "Spatial and Temporal Plot for Incident PAR", y = "Incident PAR")
+gg4 <- ggplot(log_net_loc, aes(x = epoch, y = hamabot, color = Height)) + geom_point(alpha = 0.25)+ labs(title = "Spatial and Temporal Plot for Reflected PAR", y = "Reflected PAR")
+figure <- ggarrange(gg1, gg2, gg3, gg4,
+                    ncol = 2, nrow = 2)
+figure
+```
+
